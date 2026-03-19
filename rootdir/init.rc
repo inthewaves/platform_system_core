@@ -1100,6 +1100,10 @@ on load-bpf-programs
 
     # Restore kallsyms protection after bpf programs have been loaded.
     write /proc/sys/kernel/kptr_restrict 2
+    # Set lockdown LSM to confidentiality mode
+    mount securityfs securityfs /sys/kernel/security
+    write /sys/kernel/security/lockdown confidentiality
+    umount /sys/kernel/security
 
 on bpf-progs-loaded
     start netd
