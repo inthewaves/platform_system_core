@@ -1,0 +1,26 @@
+{
+  "grapheneos": [
+    {
+      "name": "mte_suppression_maps_test",
+      "host": true
+    },
+    {
+      "name": "mte_suppression_elf_lookup_test"
+    },
+    {
+      "name": "mte_suppression_safe_read_test"
+    },
+    {
+      "name": "mte_suppression_dso_lookup_test"
+    },
+    {
+      "name": "mte_suppression_maps_dso_search_test"
+    },
+    {
+      "name": "mte_suppression_backtrace_match_test"
+    },
+    {
+      "name": "mte_suppression_capture_backtrace_test"
+    }
+  ]
+}

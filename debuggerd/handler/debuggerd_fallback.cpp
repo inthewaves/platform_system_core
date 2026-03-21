@@ -115,7 +115,8 @@ static void debuggerd_fallback_trace(int output_fd, ucontext_t* ucontext) {
 static bool forward_output(int src_fd, int dst_fd, pid_t expected_tid) {
   // Make sure the thread actually got the signal.
   struct pollfd pfd = {
-    .fd = src_fd, .events = POLLIN,
+      .fd = src_fd,
+      .events = POLLIN,
   };
 
   // Wait for up to a second for output to start flowing.
@@ -296,7 +297,8 @@ static void trace_handler(siginfo_t* info, ucontext_t* ucontext) {
         if (post_wait != pack_thread_fd(-1, -1)) {
           auto [tid, fd] = unpack_thread_fd(post_wait);
           if (fd != -1) {
-            async_safe_format_log(ANDROID_LOG_ERROR, "libc", "closing fd %d for thread %d", fd, tid);
+            async_safe_format_log(ANDROID_LOG_ERROR, "libc", "closing fd %d for thread %d", fd,
+                                  tid);
             close(fd);
           }
         }

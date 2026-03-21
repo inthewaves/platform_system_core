@@ -54,10 +54,13 @@
 #include "protocol.h"
 
 #include "handler/fallback.h"
+#include "handler/mte_suppression/handler_mte_suppression.h"
 
 using ::android::base::ParseBool;
 using ::android::base::ParseBoolResult;
 using ::android::base::Pipe;
+using mte_suppression::MteSuppressionResult;
+using mte_suppression::mte_check_suppressions;
 
 // We muck with our fds in a 'thread' that doesn't share the same fd table.
 // Close fds in that thread with a raw close syscall instead of going through libc.
@@ -658,6 +661,28 @@ static void resend_signal(siginfo_t* info) {
   }
 }
 
+// Wrapper around mte_check_suppressions that saves/restores errno.
+// debuggerd_signal_handler has its own ErrnoRestorer, but debuggerd_handle_signal
+// (sigchain path for app processes) does not, and mte_check_suppressions uses
+// syscalls (process_vm_readv, readlink, open, read) that clobber errno.
+static MteSuppressionResult check_mte_suppressions(siginfo_t* info, ucontext_t* uc) {
+  ErrnoRestorer errno_restorer;
+  timespec start{}, end{};
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  MteSuppressionResult result = mte_check_suppressions(info, uc);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  long elapsed_us = (end.tv_sec - start.tv_sec) * 1000000L + (end.tv_nsec - start.tv_nsec) / 1000;
+  async_safe_format_log(ANDROID_LOG_WARN, "libc",
+                        "mte_suppress: check_mte_suppressions took %ld us (matched=%s)", elapsed_us,
+                        result.pattern_name ? result.pattern_name : "none");
+  return result;
+}
+
+#ifdef __aarch64__
+// x30 = link register, used for logging suppressed MTE crashes.
+static constexpr int SC_REG_LR = 30;
+#endif
+
 // Handler that does crash dumping by forking and doing the processing in the child.
 // Do this by ptracing the relevant thread, and then execing debuggerd to do the actual dump.
 static void debuggerd_signal_handler(int signal_number, siginfo_t* info, void* context) {
@@ -727,9 +752,18 @@ static void debuggerd_signal_handler(int signal_number, siginfo_t* info, void* c
     }
   }
 
+  // Check if this is a recoverable MTE crash: either permissive MTE mode, or a known MTE crash
+  // pattern matched by the mte_suppression framework. Both paths disable MTE on the faulting thread
+  // and set a CPU-time timer to re-enable it.
+  MteSuppressionResult mte_suppression = {};
+  bool is_mte_suppression = false;
   if (info->si_signo == SIGSEGV &&
-      (info->si_code == SEGV_MTESERR || info->si_code == SEGV_MTEAERR) && is_permissive_mte()) {
+      (info->si_code == SEGV_MTESERR || info->si_code == SEGV_MTEAERR) &&
+      (is_permissive_mte() ||
+       (mte_suppression = check_mte_suppressions(info, ucontext)).pattern_name != nullptr)) {
+    is_mte_suppression = (mte_suppression.pattern_name != nullptr);
     process_info.recoverable_crash = true;
+
     // If we are in permissive MTE mode, we do not crash, but instead disable MTE on this thread,
     // and then let the failing instruction be retried. The second time should work (except
     // if there is another non-MTE fault).
@@ -742,11 +776,28 @@ static void debuggerd_signal_handler(int signal_number, siginfo_t* info, void* c
     if (prctl(PR_SET_TAGGED_ADDR_CTRL, tagged_addr_ctrl, 0, 0, 0) < 0) {
       fatal_errno("failed to PR_SET_TAGGED_ADDR_CTRL");
     }
-    if (int reenable_timer = permissive_mte_renable_timer()) {
-      async_safe_format_log(ANDROID_LOG_ERROR, "libc",
-                            "MTE ERROR DETECTED BUT RUNNING IN PERMISSIVE MODE. CONTINUING WITH "
-                            "MTE DISABLED FOR %d MS OF CPU TIME.",
-                            reenable_timer);
+    // Suppressions use a per-pattern timer; permissive MTE uses the configured value.
+    // This is a CLOCK_THREAD_CPUTIME_ID timer, so thread needs to execute for specified ms on CPU
+    // for it to re-enable.
+    int reenable_timer =
+        is_mte_suppression ? mte_suppression.reenable_timer_ms : permissive_mte_renable_timer();
+    if (reenable_timer) {
+      if (is_mte_suppression) {
+#ifdef __aarch64__
+        async_safe_format_log(ANDROID_LOG_ERROR, "libc",
+                              "Suppressed known MTE crash [%s]. fault_addr=%p pc=%p lr=%p tid=%d. "
+                              "MTE disabled for %d ms of thread CPU time.",
+                              mte_suppression.pattern_name, info->si_addr,
+                              reinterpret_cast<void*>(ucontext->uc_mcontext.pc),
+                              reinterpret_cast<void*>(ucontext->uc_mcontext.regs[SC_REG_LR]),
+                              __gettid(), reenable_timer);
+#endif
+      } else {
+        async_safe_format_log(ANDROID_LOG_ERROR, "libc",
+                              "MTE ERROR DETECTED BUT RUNNING IN PERMISSIVE MODE. CONTINUING WITH "
+                              "MTE DISABLED FOR %d MS OF CPU TIME.",
+                              reenable_timer);
+      }
       timer_t timerid{};
       struct sigevent sev {};
       sev.sigev_signo = BIONIC_ENABLE_MTE;
@@ -772,6 +823,35 @@ static void debuggerd_signal_handler(int signal_number, siginfo_t* info, void* c
           "MTE ERROR DETECTED BUT RUNNING IN PERMISSIVE MODE. CONTINUING WITH MTE DISABLED.");
     }
     pthread_mutex_unlock(&crash_mutex);
+
+    // Ratelimit tombstone generation for suppressed MTE crashes. The first crash always generates
+    // a tombstone; subsequent ones are skipped if less than mte_suppression_tombstone_ratelimit_ms
+    // (wall clock) have passed. Note: This should be fine for tests that read tombstones, since
+    // they make new processes.
+    //
+    // Tombstones are good for letting users know about suppressed MTE crashes, but since we know
+    // about the crash, the tombstone itself is not really needed. Extra tombstones can be
+    // suppressed. This is especially for hwc_stale_ignore_layer_buffer where it can read multiple
+    // stale pointers in a loop. Without this ratelimiting, each invalid access in mIgnoreLayers
+    // generates a tombstone which would freeze the HWC binary (and freezes the entire phone screen)
+    // for a couple of seconds when an external display is connected.
+    if (is_mte_suppression) {
+      static timespec last_tombstone = {};
+      constexpr int mte_suppression_tombstone_ratelimit_ms = 1000;
+
+      timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      long elapsed_ms = (now.tv_sec - last_tombstone.tv_sec) * 1000 +
+                        (now.tv_nsec - last_tombstone.tv_nsec) / 1000000;
+      if (last_tombstone.tv_sec != 0 && elapsed_ms < mte_suppression_tombstone_ratelimit_ms) {
+        async_safe_format_log(ANDROID_LOG_WARN, "libc",
+                              "mte_suppress: tombstone ratelimited (%ld ms since last)",
+                              elapsed_ms);
+        log_signal_summary(info);
+        return;
+      }
+      last_tombstone = now;
+    }
   }
 
   // If sival_int is ~0, it means that the fallback handler has been called
@@ -978,7 +1058,11 @@ bool debuggerd_handle_gwp_asan_signal(int signal_number, siginfo_t* info, void* 
 bool debuggerd_handle_signal(int signal_number, siginfo_t* info, void* context) {
   if (signal_number != SIGSEGV) return false;
   if (info->si_code == SEGV_MTEAERR || info->si_code == SEGV_MTESERR) {
-    if (!is_permissive_mte()) return false;
+    if (!(is_permissive_mte() ||
+          check_mte_suppressions(info, static_cast<ucontext_t*>(context)).pattern_name !=
+              nullptr)) {
+      return false;
+    }
     // Because permissive MTE disables MTE for the entire thread, we're less
     // worried about getting a whole bunch of crashes in a row. ActivityManager
     // doesn't like multiple native crashes for an app in a short period of time

@@ -1,0 +1,76 @@
+cc_defaults {
+    name: "mte_suppression_test_defaults",
+    cflags: ["-Werror=nullability-completeness"],
+    test_suites: ["general-tests"],
+}
+
+cc_test {
+    name: "mte_suppression_safe_read_test",
+    defaults: ["mte_suppression_test_defaults"],
+    srcs: ["safe_read_test.cpp"],
+}
+
+cc_test {
+    name: "mte_suppression_maps_test",
+    defaults: ["mte_suppression_test_defaults"],
+    host_supported: true,
+    srcs: ["maps_util_test.cpp"],
+}
+
+cc_test {
+    name: "mte_suppression_elf_lookup_test",
+    defaults: ["mte_suppression_test_defaults"],
+    srcs: ["elf_lookup_util_test.cpp"],
+    include_dirs: ["bionic/linker"],
+}
+
+// Tiny helper DSO built with --hash-style=both so it has DT_HASH + DT_GNU_HASH.
+// Used by dso_lookup_util_test to exercise elf_hash_lookup on arm64, where the
+// arm64 platform default (--hash-style=gnu) means most DSOs lack DT_HASH.
+cc_library_shared {
+    name: "libdso_test_hash_helper",
+    srcs: ["libdso_test_hash_helper.cpp"],
+    ldflags: ["-Wl,--hash-style=both"],
+}
+
+cc_test {
+    name: "mte_suppression_dso_lookup_test",
+    defaults: ["mte_suppression_test_defaults"],
+    srcs: ["dso_lookup_util_test.cpp"],
+    shared_libs: ["liblog"],
+    data_libs: ["libdso_test_hash_helper"],
+    static_libs: ["libasync_safe"],
+}
+
+cc_test {
+    name: "mte_suppression_maps_dso_search_test",
+    defaults: ["mte_suppression_test_defaults"],
+    srcs: ["maps_dso_search_test.cpp"],
+    shared_libs: ["liblog"],
+    data_libs: ["libdso_test_hash_helper"],
+    static_libs: ["libasync_safe"],
+}
+
+cc_test {
+    name: "mte_suppression_backtrace_match_test",
+    defaults: ["mte_suppression_test_defaults"],
+    srcs: ["backtrace_match_test.cpp"],
+    shared_libs: ["liblog"],
+    header_libs: ["bionic_libc_platform_headers"],
+    data_libs: ["libdso_test_hash_helper"],
+    static_libs: ["libasync_safe"],
+}
+
+cc_test {
+    name: "mte_suppression_capture_backtrace_test",
+    defaults: ["mte_suppression_test_defaults"],
+    srcs: ["capture_backtrace_test.cpp"],
+    // Soong's bootstrap property allows linking against the platform bionic
+    // implementation variant instead of the APEX/stub surface. This test
+    // calls android_find_current_thread_stack_limits(), whcih we added as
+    // a bionic helper function exported in libc's LIBC_PRIVATE surface
+    bootstrap: true,
+    shared_libs: ["liblog"],
+    header_libs: ["bionic_libc_platform_headers"],
+    static_libs: ["libasync_safe"],
+}

@@ -14,5 +14,4 @@
  * limitations under the License.
  */
 
-extern "C" void debuggerd_fallback_handler(struct siginfo_t*, struct ucontext_t*, void*) {
-}
+extern "C" void debuggerd_fallback_handler(struct siginfo_t*, struct ucontext_t*, void*) {}

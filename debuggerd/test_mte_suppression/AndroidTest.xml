@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<configuration description="Runs the MTE suppression tests">
+    <option name="test-suite-tag" value="mte_suppression_test" />
+    <option name="test-suite-tag" value="apct" />
+
+    <target_preparer class="com.android.tradefed.targetprep.PushFilePreparer">
+      <option name="cleanup" value="true" />
+      <option name="push" value="mte_suppression_test_crash->/data/local/tmp/mte_suppression_test_crash" />
+      <option name="push" value="mte_suppression_test_crash_unmatched->/data/local/tmp/mte_suppression_test_crash_unmatched" />
+      <option name="push" value="libmte_suppression_test_crash.so->/data/local/tmp/libmte_suppression_test_crash.so" />
+      <option name="push" value="libmte_suppression_test_nognuhash.so->/data/local/tmp/libmte_suppression_test_nognuhash.so" />
+      <option name="push" value="libmte_suppression_test_a.so->/data/local/tmp/libmte_suppression_test_a.so" />
+      <option name="push" value="libmte_suppression_test_b.so->/data/local/tmp/libmte_suppression_test_b.so" />
+    </target_preparer>
+    <target_preparer class="com.android.tradefed.targetprep.suite.SuiteApkInstaller">
+      <option name="cleanup-apks" value="true" />
+      <option name="test-file-name" value="MteSuppressionTestApp.apk" />
+      <option name="test-file-name" value="MteSuppressionTestAppExtracted.apk" />
+      <option name="test-file-name" value="MteSuppressionTestAppUnmatched.apk" />
+    </target_preparer>
+    <test class="com.android.tradefed.testtype.HostTest" >
+        <option name="jar" value="mte_suppression_test.jar" />
+    </test>
+</configuration>

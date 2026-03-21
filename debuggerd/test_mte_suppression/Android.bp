@@ -1,0 +1,193 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+// Shared library whose symbol appears in the 2-frame test suppression pattern.
+cc_library_shared {
+    name: "libmte_suppression_test_crash",
+    srcs: ["libmte_suppression_test_crash.cpp"],
+    sanitize: {
+        memtag_heap: true,
+        diag: {
+            memtag_heap: true,
+        },
+    },
+}
+
+// Cross-DSO test: so_a has inner/middle/outer, so_b has middle.
+// The 3-frame pattern requires middle from so_b.
+cc_library_shared {
+    name: "libmte_suppression_test_a",
+    srcs: ["libmte_suppression_test_a.cpp"],
+    sanitize: {
+        memtag_heap: true,
+        diag: {
+            memtag_heap: true,
+        },
+    },
+}
+
+cc_library_shared {
+    name: "libmte_suppression_test_b",
+    srcs: ["libmte_suppression_test_b.cpp"],
+    shared_libs: ["libmte_suppression_test_a"],
+    sanitize: {
+        memtag_heap: true,
+        diag: {
+            memtag_heap: true,
+        },
+    },
+}
+
+// Shared library linked with --hash-style=sysv (DT_HASH only, no DT_GNU_HASH).
+// Tests ELF hash fallback in the suppression handler.
+cc_library_shared {
+    name: "libmte_suppression_test_nognuhash",
+    srcs: ["libmte_suppression_test_nognuhash.cpp"],
+    ldflags: ["-Wl,--hash-style=sysv"],
+    sanitize: {
+        memtag_heap: true,
+        diag: {
+            memtag_heap: true,
+        },
+    },
+}
+
+// Test binary that exercises all suppression test modes.
+// Its exe path (/data/local/tmp/mte_suppression_test_crash) matches the
+// kExePath entry in suppression_pattern.h.
+cc_binary {
+    name: "mte_suppression_test_crash",
+    srcs: ["mte_suppression_test.cpp"],
+    shared_libs: [
+        "libmte_suppression_test_crash",
+        "libmte_suppression_test_nognuhash",
+        "libmte_suppression_test_a",
+        "libdl",
+    ],
+    sanitize: {
+        memtag_heap: true,
+        diag: {
+            memtag_heap: true,
+        },
+    },
+}
+
+// Same test binary under a different name. Its exe path does NOT match any
+// suppression entry, so ALL MTE faults should be fatal regardless of call stack.
+cc_binary {
+    name: "mte_suppression_test_crash_unmatched",
+    srcs: ["mte_suppression_test.cpp"],
+    shared_libs: [
+        "libmte_suppression_test_crash",
+        "libmte_suppression_test_nognuhash",
+        "libmte_suppression_test_a",
+        "libdl",
+    ],
+    sanitize: {
+        memtag_heap: true,
+        diag: {
+            memtag_heap: true,
+        },
+    },
+}
+
+// JNI library for the test app. Wraps the same crash functions for use from Java.
+cc_library_shared {
+    name: "libmte_suppression_test_app_jni",
+    srcs: ["mte_suppression_test_app_jni.cpp"],
+    shared_libs: [
+        "libmte_suppression_test_crash",
+        "libmte_suppression_test_nognuhash",
+        "libmte_suppression_test_a",
+        "libdl",
+    ],
+    header_libs: ["jni_headers"],
+    sanitize: {
+        memtag_heap: true,
+        diag: {
+            memtag_heap: true,
+        },
+    },
+}
+
+// Test app with matching package and embedded native libs. DSOs are loaded
+// directly from the APK; the suppression handler identifies them by reading
+// DT_SONAME from the mapped ELF (the APK-embedded resolution path).
+android_test_helper_app {
+    name: "MteSuppressionTestApp",
+    manifest: "app/AndroidManifest.xml",
+    srcs: ["app/src/**/*.java"],
+    jni_libs: [
+        "libmte_suppression_test_app_jni",
+        "libmte_suppression_test_crash",
+        "libmte_suppression_test_nognuhash",
+        "libmte_suppression_test_a",
+        "libmte_suppression_test_b",
+    ],
+    use_embedded_native_libs: true,
+    platform_apis: true,
+}
+
+// Test app with matching package and extracted native libs. DSOs are extracted
+// to disk and appear with their real .so basenames in /proc/self/maps (the
+// normal basename resolution path).
+android_test_helper_app {
+    name: "MteSuppressionTestAppExtracted",
+    manifest: "app_extracted/AndroidManifest.xml",
+    srcs: ["app/src/**/*.java"],
+    jni_libs: [
+        "libmte_suppression_test_app_jni",
+        "libmte_suppression_test_crash",
+        "libmte_suppression_test_nognuhash",
+        "libmte_suppression_test_a",
+        "libmte_suppression_test_b",
+    ],
+    use_embedded_native_libs: false,
+    platform_apis: true,
+}
+
+// Test app with a non-matching package name. No BinarySuppression entry exists
+// for this package, so ALL MTE faults should be fatal regardless of call stack.
+android_test_helper_app {
+    name: "MteSuppressionTestAppUnmatched",
+    manifest: "app_unmatched/AndroidManifest.xml",
+    srcs: ["app/src/**/*.java"],
+    jni_libs: [
+        "libmte_suppression_test_app_jni",
+        "libmte_suppression_test_crash",
+        "libmte_suppression_test_nognuhash",
+        "libmte_suppression_test_a",
+        "libmte_suppression_test_b",
+    ],
+    use_embedded_native_libs: true,
+    platform_apis: true,
+}
+
+java_test_host {
+    name: "mte_suppression_test",
+    libs: ["tradefed"],
+    static_libs: [
+        "frameworks-base-hostutils",
+        "cts-install-lib-host",
+    ],
+    srcs: [
+        "src/**/MteSuppressionTestBase.java",
+        "src/**/MteSuppressionNativeTest.java",
+        "src/**/MteSuppressionAppTest.java",
+        ":libtombstone_proto-src",
+    ],
+    device_first_data: [
+        ":mte_suppression_test_crash",
+        ":mte_suppression_test_crash_unmatched",
+        ":libmte_suppression_test_crash",
+        ":libmte_suppression_test_nognuhash",
+        ":libmte_suppression_test_a",
+        ":libmte_suppression_test_b",
+        ":MteSuppressionTestApp",
+        ":MteSuppressionTestAppExtracted",
+        ":MteSuppressionTestAppUnmatched",
+    ],
+    test_config: "AndroidTest.xml",
+    test_suites: ["general-tests"],
+}
